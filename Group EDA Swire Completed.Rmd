@@ -1,0 +1,641 @@
+---
+title: "Cart Abandonment EDA"
+author: "Bryson Burr, Claranne Fechter, Carl Freeze"
+date: "October 2, 2025"
+output:
+  html_document:
+    number_sections: true
+    toc: true
+  pdf_document:
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+# Introduction
+
+Swire Coca-Cola has begun the use of their new digital ordering platform, MyCoke360, and it has been running for little over a year. Cart abandonment is something all businesses have to worry about and Swire is no different. In this context, cart abandonment is described as when a customer adds items to their cart, but does not make a purchase before their next order date. This abandonment can lead to a loss in revenue. Swire has tasked us with identifying what tends to influence a customer to abandon their carts. The purpose of this notebook is to gain insight about each dataset specifically the google analytics, sales, and orders data. We want to investigate what variables could influence customers and what actions they take within their carts.
+
+## Questions
+
+1.	What are the most common events?
+2.	What are the most common grouped events?
+3.	What are the most common events by device?
+4.	What are the most common events each day?
+5.	How many events does a customer usually have before purchasing?
+6.	What mobile devices are used the most?
+7.	What events lead into each other?
+8.	What events lead to a purchase but no purchase was made?
+9.	What is the relationship between devices and abandoned carts?
+10.	How many orders are there that don’t have anything purchased?
+11.	Is there a certain plant that has more no purchase orders than others?
+12.	What is the most common frequency distribution?
+13.	What is the most common distribution mode?
+14.	What is the sales trend like? 
+15.	Who are the top customers?
+16.	What customers or materials have negative revenue?
+17. What is the average time between events?
+18. What is the normal sequence from start to finish?
+
+# Setup 
+
+## Package Loading
+
+```{r package loading, message = FALSE}
+library(tidyverse)
+library(dplyr)
+library(skimr)
+library(ggplot2)
+library(janitor)
+library(lubridate)
+library(scales)
+```
+
+## File Loading
+
+```{r file loading, message = FALSE}
+# load all files
+customer <- read_csv("customer.csv")
+cutoff_times <- read_csv("cutoff_times.csv")
+google_analytics <- read_csv("google_analytics.csv")
+material <- read_csv("material.csv")
+operating_hours <- read_csv("operating_hours.csv")
+orders <- read_csv("orders.csv")
+sales <- read_csv("sales.csv")
+visit_plan <- read_csv("visit_plan.csv")
+```
+
+# Data Description
+
+For this project, we have access to 8 datasets in total. The google analytics data contains specific actions taken by the customers on the website. Orders provide us with any order that was made. Sales contains data of what was actually sold to customers. The visit plan set helps us determine their policy and when they are scheduled to order. The last 4 datasets are customers, materials, cutoff times, and operating hours. These datasets give us further information about the customer, their policy, and products. Most of the datasets are quite large with visit plan containing 14 million rows and the smallest being cutoff times with only 220 rows. With all of this data, we will have to do some feature engineering because the target variable has not been defined. The abandoned cart, for this project, is determined by a specific time when the next order must be placed again. We will have to create this order window in order to correctly show cart abandonment. 
+
+# Data Cleaning
+
+## Google Analytics Cleaning
+
+```{r ga cleaning}
+# make column names lowercase, get rid of any spaces
+ga_clean <- google_analytics |>
+  clean_names()
+
+ga_clean <- ga_clean |>
+  mutate(
+    # make character columns character types
+    customer_id = trimws(as.character(customer_id)),
+    event_timestamp = as.character(event_timestamp),
+    event_date = as.character(event_date),
+    event_name = as.character(event_name),
+    device_category = as.character(device_category),
+    event_page_name = as.character(event_page_name),
+    event_page_title = as.character(event_page_title),
+    
+    # get day from event date
+    # get it from event timestamp if missing
+    day = as.Date(event_date, format = "%m/%d/%Y"),
+    day = ifelse(is.na(day), as.Date(substr(event_timestamp, 1, 10)), day),
+    day = as.Date(day, origin = "1970-01-01"),  # make sure it's correct class
+    
+    # Normalize event name
+    event_name_norm = tolower(trimws(event_name))
+  )
+
+#Add new column to group events into more comprehensible names to focus on what matters
+ga_clean <- ga_clean |>
+  mutate(event_grouped = case_when(
+    
+    event_name %in% c("AccountSelect_SwitchAccount_Clicked","AccountSelect_SwitchAccount_Completed",
+                      "Close_SwitchAccount_Clicked","login","Login_Cancelled","Login_Clicked",
+                      "Login_Home_Page_Displayed","logout","Logout_Profile_Clicked",
+                      "SwitchAccountPopup_Dispayed") ~ "Account",
+    
+    event_name %in% c("Account_Pressed_Failed","Get_Account_Details_Failed",
+                      "Get_Account_Easy_Order_Failed","Get_Delegated_Account_Failed",
+                      "Is_Account_Blocked_For_Ordering_Failed","Logout_Profile_Failed",
+                      "SSO_Token_Details_Failed",
+                      "Get_User_Details_From_User_Id_Failed") ~ "Account_Failed",
+    
+    event_name %in% c("add_to_cart","CartPage_Displayed","CartProductQuantity_Cart_Changed",
+                      "ContinueShopping_Cart_Clicked","export_cart_click",
+                      "ProductAddtoCart_PDP_Clicked","ProductAddtoCart_PLP_Clicked",
+                      "ProductCheckmark_Cart_Checked","ProductCheckmark_Cart_Unchecked",
+                      "ProductSelected_Cart_Clicked","remove_from_cart","SelectAll_Cart_Checked",
+                      "SelectAll_Cart_Unchecked","update_cart","UpdateCart_Cart_Clicked",
+                      "UpdateCart_Cart_Retrieved","view_cart") ~ "Cart",
+    
+    event_name %in% c("CartProducts_Cart_Retrieve_Failed","Handle_Add_To_Cart_Failed",
+                      "ProductAddtoCart_PLP_Failed","Update_Cart_Details_For_Payment_Failed",
+                      "Update_Cart_Item_With_Price_Data_Failed","Update_Cart_With_Details_Failed",
+                      "Update_Web_Cart_Failed","Error_Get_cart_data","Error_get_webcart_details",
+                      "Get_Active_Cart_Items_Failed","Get_Cart_Count_Failed",
+                      "Get_Product_Quantity_In_Cart_Failed") ~ "Cart_Failed",
+    
+    event_name %in% c("add_payment_info","add_shipping_info","begin_checkout",
+                      "proceed_to_checkout","CheckoutPage_Displayed",
+                      "CheckoutData_CheckoutPage_Retrieved") ~ "Checkout",
+    
+    event_name %in% c("OrderSuccessPage_Displayed","purchase") ~ "Purchase",
+    
+    event_name %in% c("On_Proceed_To_Checkout_Click_Failed","OrderSubmit_CheckoutPage_Failed",
+                      "Process_Payment_Error","Payment_API_Failed","Error_Handle_Payment_Method",
+                      "Get_Payment_Methods_Data_Failed","Get_Payment_Method_Failed",
+                      "Get_SnapPay_Mapping_MetaData_Failed","CheckoutData_Retrieve_Failed",
+                      "cancel_order") ~ "Checkout_Failed",
+    
+    event_name %in% c("Categories_PLP_Retrieved","filter_by","Images_PDP_Reteieved",
+                      "ProductCount_PDP","ProductCount_PLP","ProductsList_PLP_Retrieved",
+                      "select_item","select_promotion","sort_by","view_item","view_item_list",
+                      "view_promotion","view_search_results",
+                      "view_site_search") ~ "Item",
+    
+    event_name %in% c("Images_PDP_Reteieve_Failed","ProductsList_PLP_Retrieve_Failed",
+                      "Get_Assortment_Product_List_Failed",
+                      "Get_Filter_Options_Failed") ~ "Item_Failed",
+    
+    event_name %in% c("InvoiceList_InvoiceTab_Retrieved","InvoiceListFilter_InvoiceTab_Successfull",
+                      "OrderTab_Displayed","pay_invoice_click",
+                      "RecentPayedInvoice_InvoiceTab_Clicked","search_invoice",
+                      "search_order_history") ~ "Orders_Invoices",
+    
+    event_name %in% c("Check_Prod_For_AML_And_Inventory_Failed","Get_Delivery_Dates_Api_Failed",
+                      "Get_Invoice_Data_Failed","Get_Invoice_Details_Failed",
+                      "Get_Oct_Invoice_Failed","Get_Order_History_Failed",
+                      "Get_Order_History_Filter_Options_Failed","Get_Recent_Order_Data_Failed",
+                      "InvoiceList_InvoiceTab_Retrieve_Failed","Create_Delivery_Quantity_Failed",
+                      "Error_Delivery_Method",
+                      "Delete_Order_History_Cache_Failed","refund") ~ "Orders_Invoices_Failed",
+    
+    event_name %in% c("BackClicked_CST","CloseTicket_EST_Clicked","CloseTicket_EST_Successful",
+                      "create_ticket","SupportTab_Displayed","Ticked_CST_Clicked",
+                      "Ticked_EST_Clicked","Ticket_CST_Displayed","Ticket_EST_Displayed",
+                      "TicketList_CST_Retrieved","TicketList_EST_Retrieved",
+                      "TicketListFilter_CST_Successfull","TicketListFilter_EST_Successfull",
+                      "TicketSearch_CST_Clicked","TicketSearch_EST_Clicked") ~ "Tickets",
+    
+    event_name %in% c("Post_Create_ESTCST_Ticket_Failed","TicketList_CST_Retrieve_Failed",
+                      "TicketList_EST_Retrieve_Failed") ~ "Tickets_Failed",
+    
+    event_name %in% c("application_launched","app_remove","app_update","BackClicked_PDP",
+                      "button_click","Close_Profile_Clicked","homepage_register_now",
+                      "nav_link_click","page_view","ProfilePopup_Displayed","screen_view",
+                      "session_start","user_engagement","first_visit") ~ "Engagement",
+    
+    event_name %in% c("Get_Banner_Images_Dashboard_Count","Get_Banner_Images_Plp_Count",
+                      "Get_Banner_Images_Time_Comparison",
+                      "Maintenance_Flag_Successful","os_update") ~ "Other_Success",
+    
+    event_name %in% c("AML_Validation_Failed","Error_post_create_webcart",
+                      "Error_Updating_Session_Delivery","Fetch_Menu_Access_Failed",
+                      "Get_Banner_Images_Failed","Get_Bottler_Meta_Data_Failed",
+                      "Get_Web_Store_Failed","Handle_Auth_Success_Failed",
+                      "handle_save_azure_key_failed","Get_Is_Dom_Enabled_Failed",
+                      "Get_Decision_Tree_Data_Failed") ~ "Other_Failed",
+    
+    TRUE ~ "Other"
+  ))
+```
+
+## Orders cleaning
+
+```{r orders cleaning}
+# make column names lowercase, get rid of any spaces
+orders_clean <- orders |>
+  clean_names()
+
+# make character columns characters, created dates as dates
+# create purchased columns, if order quantity is 0 then no purchase
+orders_clean <- orders_clean |>
+  mutate(
+    customer_id = trimws(as.character(customer_id)),
+    plant_id = as.factor(plant_id),
+    created_date_est = as.Date(created_date_est),
+    created_date_utc = lubridate::ymd_hms(created_date_utc, tz = "UTC"),
+    order_purchased = if_else(order_quantity == 0, "No Purchase", "Purchased", missing = "No Purchase")
+  )
+
+```
+
+## Visits Cleaning
+
+```{r visits cleaning, message = FALSE}
+# make column names lowercase, get rid of any spaces
+visits_clean <- visit_plan |>
+  clean_names()
+
+# don't need any information before first date on ga_copy
+# get rid of any anchor dates with NA's
+visits_clean <- visits_clean |>
+  filter(elt_ts >= "2024-05-31",
+         !is.na(anchor_date))
+
+# change frequency to # of days that code correlates to
+visits_clean <- visits_clean |>
+  mutate(
+  frequency = case_when(
+    frequency == "01" ~ 7,
+    frequency == "02" ~ 14,
+    frequency == "04" ~ 28,
+    TRUE ~ NA))
+
+visits_clean <- visits_clean |>
+  mutate(customer_id = trimws(as.character(customer_id)), # make it character type
+         elt_ts = ymd_hms(elt_ts), 
+         # replace any missing or null values with unknown
+         distribution_mode = ifelse(is.na( distribution_mode) |  distribution_mode == ""|  distribution_mode == "null", "Unknown",  distribution_mode),
+         sales_office_desc = ifelse(is.na(sales_office_desc) | sales_office_desc == ""| sales_office_desc == "null", "Unknown",sales_office_desc),
+         sales_office = ifelse(is.na(sales_office) | sales_office == ""| sales_office == "null", "Unknown", sales_office),
+         # date conversions
+         snapshot_date = ymd(snapshot_date),
+         anchor_date = ymd(anchor_date),
+         snapshot_month = floor_date(snapshot_date, unit = "month"),
+         anchor_month = floor_date(anchor_date, unit = "month"))
+```
+
+## Sales Cleaning
+
+```{r sales cleaning}
+# make column names lowercase, get rid of any spaces
+sales_clean <- sales |>
+  clean_names()
+
+# conversion into correct column types
+sales_clean <- sales_clean |>
+  mutate(posting_date = mdy(posting_date),
+         gross_profit_dead_net = as.numeric(gross_profit_dead_net))
+
+# see how many negative profits and revenue there is
+sales_clean |> summarise(
+  neg_profit = sum(gross_profit_dead_net < 0),
+  neg_nsi = sum(nsi_dead_net < 0)
+)
+
+# make column to show negatives
+sales_clean <- sales_clean |>
+  mutate(gross_profit_neg = if_else(gross_profit_dead_net < 0, "Negative", "Positive"),
+         nsi_neg = if_else(nsi_dead_net < 0, "Negative", "Positive"))
+```
+
+# Missing Data
+
+There were several areas in the datasets used for the EDA where data was missing. The largest issue was the visit plan data which had 3,792 rows where the ANCHOR_DATE failed to parse because the formats were inconsistent or there was missing data. This prevented us from accurately calculating the anchor weekdays and order windows. We’ll need to transform all the values into one format and remove any rows that are missing or can’t be corrected.
+Another issue with missing data was found in the cutoff times file. There were null values for the sales office and plant id. For the time being, the invalid rows had deadlines set to 5:00pm. However, it will be better for us moving forward to remove the rows and use the more accurate order windows.
+Finally, the google analytics file also had some missing data in the event page title and device brand name columns, but this did not have any significant impacts to our EDA as we can just drop the rows.
+
+
+# EDA 
+
+## Google Analytics EDA
+
+```{r ga eda}
+# What are the most common events?
+# keep top 10 for readability
+ga_clean |>
+  count(event_name, sort = TRUE) |>
+  slice_max(n, n = 10)
+
+# most common grouped events
+event_summary <- ga_clean |>
+  count(event_grouped, sort = TRUE) |>
+  mutate(percent = round(n / sum(n) * 100, 2))
+event_summary
+
+# visualization of distribution of event groups
+ggplot(event_summary, aes(x = reorder(event_grouped, -n), y = n, fill = event_grouped)) +
+  geom_col() +
+  geom_text(aes(label = paste0(percent, "%")),
+            vjust = -0.5, size = 3) +
+  labs(title = "Distribution of Event Groups",
+       x = "Event Group",
+       y = "Count of Events") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+
+# count of event by device
+ggplot(ga_clean, aes(x = event_grouped, fill = device_category)) +
+  geom_bar(stat = "count", position = "dodge") +
+  labs(title = "Count of Event by Device", x = "Grouped Events", y = "Count", fill = "Device Category") +
+  coord_flip()
+  
+# proportion of event by device
+ga_clean |>
+  group_by(device_category, event_grouped) %>%
+  summarise(count = n()) %>%
+  group_by(device_category) %>%
+  mutate(prop = count / sum(count)) %>%
+  ggplot(aes(x = event_grouped, y = prop, fill = device_category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip()
+
+# Common events that happen each day
+google_clean_daily <- ga_clean |>
+  group_by(event_date, event_grouped) |>
+  summarise(count = n(), .groups = "drop")
+
+ggplot(google_clean_daily, aes(x = event_date, y = count, fill = event_grouped)) +
+  geom_col() +
+  labs(title = "Daily Events by Group",
+       x = "Date",
+       y = "Number of Events",
+       fill = "Event Group") +
+  theme_minimal() + 
+  coord_flip()
+
+# how many events does a customer usually have before purchasing?
+events_before_purchase <- ga_clean |>
+  arrange(customer_id, event_timestamp) |>
+  group_by(customer_id) |>
+  mutate(
+    # keep counter of number of events
+    event_number = row_number(),
+    # counter ends when event name equals purchase
+    purchase_flag = event_name == "purchase",
+    # keep counter of purchase periods
+    purchase_cycle = cumsum(lag(purchase_flag, default = FALSE))
+  ) |>
+  group_by(customer_id, purchase_cycle) |>
+  # how many events have happened since last purchase
+  mutate(events_in_cycle = row_number()) |>
+  ungroup() |>
+  # keep only the purchase rows
+  filter(purchase_flag)|>
+  # keep only purchase events but keep how many events happened before it
+  select(customer_id, event_timestamp, events_in_cycle)
+
+# see avg, median and max number of events before purchases
+events_before_purchase |>
+  summarise(
+    avg_events = mean(events_in_cycle),
+    median_events = median(events_in_cycle),
+    max_events = max(events_in_cycle)
+  )
+
+# seeing what mobile devices are used most
+ga_clean |>
+  filter(device_category == "mobile") |>
+  count(device_mobile_brand_name) |>
+  ggplot(aes(x = reorder(device_mobile_brand_name, n), y = n, fill = device_mobile_brand_name)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(
+    title = "Number of Events by Mobile Brand Name",
+    x = "Device brand",
+    y = "Number of Events"
+  )
+
+#See events that should lead into each other
+funnel_google_clean <- ga_clean |>
+  group_by(event_grouped) |>
+  summarise(users = n_distinct(customer_id), .groups = "drop") |>
+  filter(event_grouped %in% c("Engagement", "Item", "Cart", "Checkout", "Purchase")) |>
+  mutate(event_grouped = factor(event_grouped, 
+                                levels = c("Engagement", "Item", "Cart", "Checkout", "Purchase")))
+
+ggplot(funnel_google_clean, aes(x = event_grouped, y = users)) +
+  geom_col(fill = "lightblue") +
+  geom_text(aes(label = users), vjust = -0.5) +
+  labs(title = "User Funnel",
+       x = "Stage",
+       y = "Unique Users") +
+  theme_minimal()
+
+# Events that lead to a purchase but no purchase was made/checkout failed
+funnel_google_clea_2 <- ga_clean |>
+  group_by(event_grouped) |>
+  summarise(users = n_distinct(customer_id), .groups = "drop") |>
+  filter(event_grouped %in% c("Engagement", "Item", "Cart", "Checkout", "Checkout_Failed")) |>
+  mutate(event_grouped = factor(event_grouped, 
+                                levels = c("Engagement", "Item", "Cart", "Checkout", "Checkout_Failed")))
+
+ggplot(funnel_google_clea_2, aes(x = event_grouped, y = users)) +
+  geom_col(fill = "pink") +
+  geom_text(aes(label = users), vjust = -0.5) +
+  labs(title = "User Funnel",
+       x = "Stage",
+       y = "Unique Users") +
+  theme_minimal()
+
+## Relationship between Device and Abandonment
+
+# abandoned proxy is when customer-day has add_to_cart AND NO purchase on that day
+
+# Make per-customer-day flags
+tmp <- ga_clean[, c("customer_id","day","event_name_norm")]
+
+has_add <- aggregate(event_name_norm ~ customer_id + day, tmp, function(x) any(x == "add_to_cart"))
+names(has_add)[3] <- "has_add"
+
+has_purchase <- aggregate(event_name_norm ~ customer_id + day, tmp, function(x) any(x == "purchase"))
+names(has_purchase)[3] <- "has_purchase"
+
+lab <- merge(has_add, has_purchase, by = c("customer_id","day"), all.x = TRUE)
+lab$has_purchase[is.na(lab$has_purchase)] <- FALSE
+lab$abandoned_proxy <- lab$has_add & !lab$has_purchase
+
+# Keep only intent days with add to carts
+lab <- lab[lab$has_add, c("customer_id","day","abandoned_proxy")]
+
+# Attach the first device seen on each customer-day
+ord <- order(ga_clean$customer_id, ga_clean$day, ga_clean$event_timestamp)
+first_device <- ga_clean[ord, c("customer_id","day","device_category")]
+first_device <- first_device[!duplicated(first_device[, c("customer_id","day")]), ]
+
+cd_dev <- merge(lab, first_device, by = c("customer_id","day"), all.x = TRUE)
+
+# % abandoned within each device
+tab_raw <- with(cd_dev, table(device_category, abandoned_proxy))
+
+dev_pct <- if (!"TRUE" %in% colnames(tab_raw)) {
+  setNames(rep(0, nrow(tab_raw)), rownames(tab_raw))
+} else if (!"FALSE" %in% colnames(tab_raw)) {
+  setNames(rep(1, nrow(tab_raw)), rownames(tab_raw))
+} else {
+  prop.table(tab_raw, 1)[, "TRUE"]
+}
+
+# % abandoned by device high to low
+sort(round(100 * dev_pct, 1), decreasing = TRUE)
+```
+
+Page views are by far the most common event we see in the data. There is a big gap
+between that and the second most event of button clicks. We grouped some of the 
+events together to make it easier to focus on the most important ones and see that
+engagement, e.g. page views, clicks, screen views, etc. are the most common grouped
+event as 58% of all actions are some type of engagement. <br>
+
+When it comes to devices, desktop is the most common device for all events, followed
+by mobile. There is very little tablet. Out of the mobile devices, apple is by far
+used the most. We also saw that the percent of abandoned carts is pretty similar
+by device. Mobile and tablet are separated by 0.6%, with desktop being the smallest
+percentage. <br>
+
+There are on average 98 events before a purchase is made, with 69 being the median. 
+The max was over 2,000, so that tells us there can be a wide ranging amount of 
+events that can be recorded before a purchase is made. Lastly, we see 2,000 fewer
+unique users reach purchase that had an engagement event. Only 85 from over 6,000
+that started with an engagement reached a failed checkout. 
+
+
+## Orders EDA
+
+```{r orders eda}
+# see how many purchased and no purchased there are
+table(orders_clean$order_purchased)
+
+# Look at only no purchase/no order quantity
+no_purchase_orders <- orders_clean |>
+  filter(order_purchased == "No Purchase")
+
+# graph to view no purchase orders over time
+no_purchase_orders |>
+  group_by(created_date_est) |>
+  summarise(count = n(), .groups = "drop") |>
+  ggplot(aes(x = created_date_est, y = count)) +
+  geom_line(color = "red") +
+  labs(title = "No Purchase Orders Over Time",
+       x = "Date",
+       y = "Number of No Purchase Orders") +
+  theme_minimal()
+
+# No order quantity by order type
+no_purchase_orders |>
+  count(order_type) |>
+  ggplot(aes(x = order_type, y = n, fill = order_type)) +
+  geom_col() +
+  geom_text(aes(label = n), vjust = -0.5) +
+  labs(title = "No Purchase Orders by Type",
+       x = "Order Type",
+       y = "Count") +
+  theme_minimal()
+
+# No order quantity by plant
+no_purchase_orders |>
+  count(plant_id) |>
+  ggplot(aes(x = plant_id, y = n, fill = plant_id)) +
+  geom_col() +
+  geom_text(aes(label = n), vjust = -0.5) +
+  labs(title = "No Purchase Orders by Plant",
+       x = "Plant ID",
+       y = "Count") +
+  theme_minimal()
+```
+
+Only 94 of the orders have no purchase associated with them. MyCoke360 was the order
+type with the most orders without a purchase, while plant G261 was responsible for
+the majority of the no purchase orders. We would like to look deeper into why
+that may be the case. 
+
+## Visit Plan EDA
+
+```{r visit plan eda}
+# see most common distribution mode
+visits_clean |>
+  count(distribution_mode) |>
+  arrange(desc(n))
+
+# distribution of frequency
+visits_clean |>
+  ggplot(aes(x = as.factor(frequency))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of Visit Frequencies", x = "Frequency in Days", y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+
+# Number of visits by sales office
+visits_clean |>
+  count(sales_office_desc) |>
+  ggplot(aes(x = reorder(sales_office_desc, n), y = n)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  labs(title = "Visits by Sales Office", x = "Sales Office", y = "Count")
+
+```
+
+The most common distribution modes are OSF and sideload, with 7 days being the
+most common frequency for distribution. We do see a good amount of NA's for 
+frequency. That is something that we will need to look into further before 
+creating order windows, as knowing the frequency is crucial to accomplishing that.
+We also see that Draper is the office where the most sales come from. 
+
+## Sales EDA
+
+```{r sales eda}
+# see sales trends over time
+sales_clean |>
+  group_by(month = floor_date(posting_date, "month")) |>
+  summarise(total_sales = sum(nsi_dead_net), .groups = "drop") |>
+  ggplot(aes(x = month, y = total_sales)) +
+  geom_line(color = "darkgreen", linewidth = 1) +
+  labs(title = "Sales Trend Over Time",
+       x = "Month", y = "Total Sales") +
+  theme_minimal()
+
+# Top customers
+sales_clean |>
+  group_by(customer_id) |>
+  summarise(total_sales = sum(nsi_dead_net)) |>
+  slice_max(total_sales, n = 10) |>
+  ggplot(aes(x = reorder(customer_id, total_sales), y = total_sales)) +
+  geom_col(fill = "darkorange") +
+  coord_flip() +
+  labs(title = "Top 10 Customers by Sales",
+       x = "Customer", y = "Total Sales") +
+  scale_y_continuous(labels = comma)
+
+# Customers with negative revenue
+sales_clean |> 
+  filter(nsi_neg == "Negative") |>
+  count(customer_id, sort = TRUE)
+
+# Materials that have negative revenue
+sales_clean |> 
+  filter(nsi_neg == "Negative") |>
+  count(material_id, sort = TRUE)
+
+# Negatives over time
+sales_clean |> 
+  filter(nsi_neg == "Negative") |>
+  group_by(month = floor_date(posting_date, "month")) |>
+  summarize(negative_sales = n()) |>
+  ggplot(aes(x = month, y = negative_sales)) +
+  geom_line(color = "red") +
+  labs(title = "Trend of Negative Revenue Over Time",
+       x = "Month", y = "TNegative Revenue")
+```
+
+Sales trends have stayed consistent over the past year and a half. When looking at the top spending customers, we see the top customer is responsible for a lot of sales, having spent more than double what the second customer has. 
+
+# Results
+
+Through our exploratory data analysis, we discovered three major insights toward customer behavior and abandonment or cart activity.
+
+## Device
+
+By using a proxy where customers added to cart but didn’t purchase on the same day, we examined the proportion of abandonments attributed to each device. Although this does not reflect the true order window yet, it gives us some insight on initial customer activity. This gap is large enough to prioritize device-specific checks as we see that tablet and mobile takes up the majority of the abandonments.
+
+## Cart Churn
+
+Customer activity is compared between days with purchases and without. Lift is calculated to determine what shows up more often on abandonment days. Basic site navigation had the highest volume of activity and also positive lifts. This includes: button clicks, viewing or selecting items, and removing from cart. We’ll need to focus more on churn related behaviors like removing from cart as they are tied more directly to customer behavior leading to abandonment.
+
+## Engagement
+
+As mentioned most activity (about 80%) we capture are basic actions, but only about 0.93% of events are actual purchases. Customers are browsing and adding items to cart often, but end up not churning. We’ll need to simplify checkout steps and reduce the amount of effort it takes to go from cart to purchase.
+
+## Data Issues
+
+There were several data issues that we had to work through. We had to clean data to ensure it was being captured correctly. This included things like changing fields to characters, parsing dates, and other tiny tweaks to make sure that data was read and captured accurately. The cut off times for an order window is tied to the office or plant and not customers. Some rows were invalid so we had to default the cutoff to 5:00 pm in those cases. In addition to that, we had to be careful because the order windows or policies of customers can change. Taking the correct snapshot of an event for the given customer to ensure abandonments and churns are recorded accurately. 
+
+## Further Analysis
+
+This EDA helped us find insightful data of customer behavior and site activity, but we need to translate this into actionable recommendations. For further analysis, we will focus more on behaviours that tie closely to abandonment or are lowering the churn rate after items have been added to cart. We can also analyze why mobile and tablet devices have higher abandonment rates than desktop users. By segmenting activity by device, we can find what behaviors cause lower churn rates and use that to improve the user interface of the platform.
+
+# Group Contribution
+
+## Carl
+
+Completed the missing data and results section of the EDA. In the individual EDA, was able to take a random sample of the data for analysis. Used the data to find the relationship between the customer device used and abandonment. Also, found customer events with positive lift (commonly found in abandonments).
+
+## Claranne 
+
+Completed the introduction and data description part of the EDA. Assisted with the cleaning of all datasets and added variables like grouping events in the google analytics, negative revenue in the sales, and if there was a purchase in the orders table. Used the grouped events to see what path a customer might take if they make a purchase or abandon their cart. Also, in the personal EDA, continuing to work on creating the order window that is accurate for the business cotext. We did not include this as it is not ready to inculde yet. 
+
+## Bryson
+
+Was in charge of putting together all of the code into one document. Took each individauls code and used what was necessary to complete the EDA. Also added in key comment within code chunks and included insight to what visualizations showed. 
